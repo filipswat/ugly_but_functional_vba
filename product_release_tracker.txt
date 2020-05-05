@@ -1,0 +1,745 @@
+Option Explicit
+
+'reeeaaallly ugly code
+'written in the course of about 2 days under very large time constraints
+'the initial scope of this also pivoted midway through writing it
+'(from a focus on a single lot lookup tool to a full report of all unreleased lots)
+'kept meaning to come back and refactor this one, but never really had the time
+
+
+Dim chewTracker, deviationTracker, QATracker, OOSTracker, issueTracker As Workbook
+Dim summarySheet, backendSheet, QASheet, reportSheet, OOSSheet, issueSheet As Worksheet
+Dim targetLotRange, targetEDPRange, startCell, nextCell, updateRange, updateCell, deviationRange, statusRange, deviationCell, statusCell, devPasteCell, lastUpdateCell, OOSCell, OOSRange As Range
+Dim ennovDeviations As ListObject
+Dim I, j, rowCount, stringLength, lotCol, devCol, lotRow, devRow, statusCol, statusRow, OOSCol, OOSRow As Long
+Dim searchLot, devThing, arrDev, arrOOS, OOSThing As Variant
+Dim deviationCollection As New Collection
+Dim OOSCollection As New Collection
+Dim devListColl As New Collection
+Dim devListMaster As New Collection
+Dim OOSListColl As New Collection
+Dim startAddress, printString, lotStatus, devArray() As String
+Dim OOSArray() As String
+
+
+'add script for autoupdating genealogy master table (in progress)
+'work on including global deviation collection / dictionary instead of weird local updates
+'sort DR breakdown (move closed to end?)
+
+Public Sub updateLots()
+
+Dim granRange, granCell, toQADateCell, blendCell As Range
+Dim granColl As Collection
+Dim granThing As Variant
+Dim charColl As Collection
+Dim charNum As Variant
+Dim textCell, textRange, blendOverride As Range
+Dim lastChar As Long
+
+Application.Calculation = xlCalculationManual
+
+Set chewTracker = Workbooks("Soft Chew Tracking.xlsm")
+Set summarySheet = chewTracker.Worksheets("Deviation Summary")
+Set reportSheet = chewTracker.Worksheets("Pack Report")
+Set backendSheet = chewTracker.Worksheets("Backend Data")
+Set lastUpdateCell = reportSheet.Cells(3000, Range("updateStart").Column)
+Set lastUpdateCell = lastUpdateCell.End(xlUp)
+Set issueTracker = getWorkbook("S:\Public\1-Production\Schedule Data\BR Issue Tracking.xlsx")
+Set issueSheet = issueTracker.Worksheets("Batch Records Issued")
+Set blendOverride = backendSheet.Range("B33")
+
+With issueSheet
+    If .AutoFilterMode Then
+        If .FilterMode Then
+            .ShowAllData
+        End If
+    Else
+        If .FilterMode Then
+            .ShowAllData
+        End If
+    End If
+End With
+
+reportSheet.Activate
+
+Range("clearRange").ClearContents
+Range("clearRange").Font.Color = RGB(0, 0, 0)
+
+Set updateRange = Range("updateStart", lastUpdateCell)
+Set deviationRange = Range("deviationRange")
+Set OOSRange = Range("OOSRange")
+Set statusRange = Range("statusRange")
+Set devPasteCell = Range("devPasteCell")
+Set granRange = backendSheet.Range("C5", "C13")
+Set toQADateCell = Range("toQADate")
+
+Set devListMaster = New Collection
+
+For Each updateCell In updateRange
+    If Not IsEmpty(updateCell) Then
+        deviationRange.ClearContents
+        statusRange.ClearContents
+        Set devListColl = New Collection
+        Range("packLotCell") = updateCell.Value2
+
+        Application.Calculate
+        
+        If IsEmpty(blendOverride) Or blendOverride.Value2 = "" Then
+            If IsNumeric(reportSheet.Cells(updateCell.Row, Range("reportBlendLot").Column)) Or VarType(reportSheet.Cells(updateCell.Row, Range("reportBlendLot").Column)) = vbString Then
+                blendOverride.Value2 = reportSheet.Cells(updateCell.Row, Range("reportBlendLot").Column)
+            End If
+        End If
+        
+        Application.Calculate
+        
+        Call findDeviations
+        For Each deviationCell In deviationRange
+            If Not IsEmpty(deviationCell) Then
+                devArray = Split(deviationCell.Value2, Chr(10))
+                For Each arrDev In devArray
+                    arrDev = Trim(arrDev)
+                    If Not Contains(devListColl, arrDev) Then
+                        devListColl.Add (arrDev)
+                    End If
+                Next
+            End If
+        Next
+        printString = ""
+        For Each devThing In devListColl
+            If Not Contains(devListMaster, devThing) Then
+                devListMaster.Add (devThing)
+            End If
+            printString = printString + CStr(devThing) + Chr(10)
+        Next
+        
+        
+        Call findLotStatus
+                
+        With reportSheet
+            .Cells(updateCell.Row, Range("reportPackStatus").Column) = Range("packStatusCell").Value2
+            If Not (IsNumeric(.Cells(updateCell.Row, Range("reportBlendLot").Column).Value2) Or VarType(.Cells(updateCell.Row, Range("reportBlendLot").Column).Value2) = vbString) Then
+                .Cells(updateCell.Row, Range("reportBlendLot").Column).Value2 = Range("blendLotCell").Value2
+            End If
+            .Cells(updateCell.Row, Range("reportBlendStatus").Column) = Range("blendStatusCell").Value2
+        End With
+        
+        If Len(printString) > 0 Then
+            reportSheet.Cells(updateCell.Row, Range("reportDeviations").Column) = Left(printString, Len(printString) - 1)
+        End If
+        
+        'start likely problems
+        Set charColl = New Collection
+        lastChar = 1
+        Do While InStr(lastChar, reportSheet.Cells(updateCell.Row, Range("reportDeviations").Column).Value2, "(") > 0
+            charColl.Add (InStr(lastChar, reportSheet.Cells(updateCell.Row, Range("reportDeviations").Column).Value2, "(") - 13)
+            lastChar = InStr(lastChar, reportSheet.Cells(updateCell.Row, Range("reportDeviations").Column).Value2, "(") + 1
+        Loop
+        For Each charNum In charColl
+            reportSheet.Cells(updateCell.Row, Range("reportDeviations").Column).Characters(CLng(charNum), 12).Font.Color = RGB(255, 0, 0)
+        Next
+        'end likely problems
+                
+        Set granColl = New Collection
+        For Each granCell In granRange
+            If VarType(granCell.Value2) <> vbError Then
+                If InStr(1, CStr(granCell.Offset(0, 3).Value2), "QA Review Complete") Or InStr(1, CStr(granCell.Offset(0, 3).Value2), "Dispositioned by Auditor") Or InStr(1, CStr(granCell.Offset(0, 3).Value2), "Released") Then
+                    granColl.Add (CStr(granCell.Value2) & " (Review Complete)")
+                Else
+                    granColl.Add (CStr(granCell.Value2) & " (In Progress)")
+                End If
+            End If
+        Next
+        printString = ""
+        For Each granThing In granColl
+            printString = printString + CStr(granThing) + Chr(10)
+        Next
+        If Len(printString) > 0 Then
+            reportSheet.Cells(updateCell.Row, Range("reportGranulations").Column) = Left(printString, Len(printString) - 1)
+        End If
+                
+        Call findOOS
+        Set OOSListColl = New Collection
+        For Each OOSCell In OOSRange
+            If Not IsEmpty(OOSCell) Then
+                OOSArray = Split(OOSCell.Value2, Chr(10))
+                For Each arrOOS In OOSArray
+                    arrOOS = Trim(arrOOS)
+                    If Not Contains(OOSListColl, arrOOS) Then
+                        OOSListColl.Add (arrOOS)
+                    End If
+                Next
+            End If
+        Next
+        printString = ""
+        For Each OOSThing In OOSListColl
+            printString = printString + CStr(OOSThing) + Chr(10)
+        Next
+        If Len(printString) > 0 Then
+            reportSheet.Cells(updateCell.Row, Range("reportOOS").Column) = Left(printString, Len(printString) - 1)
+        End If
+        
+        If Not issueSheet.Range("F2", "F10000").Find(updateCell.Value2) Is Nothing And Not issueSheet.Range("F2", "F10000").Find(updateCell.Value2).Offset(0, 11).Value2 = "" Then
+            reportSheet.Cells(updateCell.Row, toQADateCell.Column).Value2 = issueSheet.Range("F2", "F10000").Find(updateCell.Value2).Offset(0, 11).Value2
+        End If
+        
+        Set blendCell = reportSheet.Cells(updateCell.Row, Range("reportBlendLot").Column)
+        
+        If (Not IsEmpty(blendCell)) And VarType(blendCell.Value2) <> vbError Then
+            If Not issueSheet.Range("F2", "F10000").Find(blendCell.Value2) Is Nothing Then
+                reportSheet.Cells(updateCell.Row, Range("reportBlendtoQA").Column).Value2 = issueSheet.Range("F2", "F10000").Find(blendCell.Value2).Offset(0, 11).Value2
+            End If
+        End If
+        
+        blendOverride.ClearContents
+        
+    End If
+Next
+
+I = 1
+
+'For Each devThing In devListMaster
+'    summarySheet.Range("B" + CStr((2 + i))) = Left(devThing, 12)
+'    i = i + 1
+'Next
+
+Call updateDRs
+
+reportSheet.Activate
+
+Application.Calculation = xlCalculationAutomatic
+
+End Sub
+
+Public Sub updateDRs()
+
+Set chewTracker = Workbooks("Soft Chew Tracking.xlsm")
+Set deviationTracker = getWorkbook("V:\QualityAssurance\Quality Assurance\Manufacturing Investigations\Deviation Tracking Log 2015 - 2017.xlsx")
+Set summarySheet = chewTracker.Worksheets("Deviation Summary")
+
+Set ennovDeviations = deviationTracker.Worksheets("Ennov Deviations").ListObjects("ennovTable")
+rowCount = summarySheet.Range("A3", summarySheet.Range("A3").End(xlDown)).Rows.Count
+
+Application.Calculate
+
+For I = 1 To rowCount
+   If Not ennovDeviations.ListColumns(1).DataBodyRange.Find(summarySheet.Range("A" + CStr(I + 2))) Is Nothing Then
+        summarySheet.Range("B" + CStr(I + 2)).Value2 = ennovDeviations.ListColumns(1).DataBodyRange.Find(summarySheet.Range("A" + CStr(I + 2))).Offset(0, 1).Value2
+        summarySheet.Range("C" + CStr(I + 2)).Value2 = ennovDeviations.ListColumns(1).DataBodyRange.Find(summarySheet.Range("A" + CStr(I + 2))).Offset(0, 9).Value2
+        summarySheet.Range("D" + CStr(I + 2)).Value2 = ennovDeviations.ListColumns(1).DataBodyRange.Find(summarySheet.Range("A" + CStr(I + 2))).Offset(0, 10).Value2
+        summarySheet.Range("E" + CStr(I + 2)).Value2 = ennovDeviations.ListColumns(1).DataBodyRange.Find(summarySheet.Range("A" + CStr(I + 2))).Offset(0, 8).Value2
+        summarySheet.Range("F" + CStr(I + 2)).Value2 = ennovDeviations.ListColumns(1).DataBodyRange.Find(summarySheet.Range("A" + CStr(I + 2))).Offset(0, 11).Value2
+        summarySheet.Range("G" + CStr(I + 2)).Value2 = ennovDeviations.ListColumns(1).DataBodyRange.Find(summarySheet.Range("A" + CStr(I + 2))).Offset(0, 14).Value2
+        summarySheet.Range("H" + CStr(I + 2)).Value2 = ennovDeviations.ListColumns(1).DataBodyRange.Find(summarySheet.Range("A" + CStr(I + 2))).Offset(0, 16).Value2
+    End If
+Next
+
+End Sub
+
+Public Sub findDeviations()
+
+Set chewTracker = Workbooks("Soft Chew Tracking.xlsm")
+Set backendSheet = chewTracker.Worksheets("Backend Data")
+Set deviationTracker = getWorkbook("V:\QualityAssurance\Quality Assurance\Manufacturing Investigations\Deviation Tracking Log 2015 - 2017.xlsx")
+
+Set ennovDeviations = deviationTracker.Worksheets("Ennov Deviations").ListObjects("ennovTable")
+rowCount = backendSheet.Range("C3", "C13").Rows.Count
+Range("deviationRange").ClearContents
+
+lotCol = Range("lotCell").Column
+devCol = Range("devCell").Column
+lotRow = Range("lotCell").Row
+devRow = Range("devCell").Row
+
+Application.Calculate
+
+For I = 1 To rowCount
+    If Not IsError(backendSheet.Cells(lotRow + I, lotCol).Value2) Then
+        searchLot = backendSheet.Cells(lotRow + I, lotCol).Value2
+    
+        printString = ""
+        
+        Set deviationCollection = New Collection
+        
+        Set startCell = ennovDeviations.ListColumns(12).DataBodyRange.Find(searchLot)
+        If Not startCell Is Nothing Then
+            startAddress = startCell.Address
+            Do
+                If Not IsEmpty(ennovDeviations.DataBodyRange(startCell.Row - 1, 16)) And Not ennovDeviations.DataBodyRange(startCell.Row - 1, 16).Value = "" Then
+                    deviationCollection.Add (ennovDeviations.DataBodyRange(startCell.Row - 1, 1).Value & ": Closed")
+                Else
+                    deviationCollection.Add (ennovDeviations.DataBodyRange(startCell.Row - 1, 1).Value & " (" & ennovDeviations.DataBodyRange(startCell.Row - 1, 9).Value & ")")
+                End If
+                Set startCell = ennovDeviations.ListColumns(12).DataBodyRange.FindNext(startCell)
+            Loop While Not startCell Is Nothing And startCell.Address <> startAddress
+        End If
+        
+        Set startCell = ennovDeviations.ListColumns(15).DataBodyRange.Find(searchLot)
+        If Not startCell Is Nothing Then
+            startAddress = startCell.Address
+            Do
+                If Not IsEmpty(ennovDeviations.DataBodyRange(startCell.Row - 1, 16)) And Not ennovDeviations.DataBodyRange(startCell.Row - 1, 16).Value = "" Then
+                    deviationCollection.Add (ennovDeviations.DataBodyRange(startCell.Row - 1, 1).Value & ": Closed")
+                Else
+                    deviationCollection.Add (ennovDeviations.DataBodyRange(startCell.Row - 1, 1).Value & " (" & ennovDeviations.DataBodyRange(startCell.Row - 1, 9).Value & ")")
+                End If
+                Set startCell = ennovDeviations.ListColumns(15).DataBodyRange.FindNext(startCell)
+            Loop While Not startCell Is Nothing And startCell.Address <> startAddress
+        End If
+        
+        For j = 1 To deviationCollection.Count
+            printString = printString & deviationCollection(j) & Chr(10)
+        Next
+        stringLength = CLng(Len(printString)) - 2
+        If stringLength > -1 Then
+            backendSheet.Cells(devRow + I, devCol).Value = Left(printString, stringLength + 1)
+        End If
+    End If
+Next
+
+End Sub
+
+Public Sub findLotStatus()
+
+Set chewTracker = Workbooks("Soft Chew Tracking.xlsm")
+Set backendSheet = chewTracker.Worksheets("Backend Data")
+Set QATracker = getWorkbook("V:\QualityAssurance\Quality Assurance\Auditors\TVS\2017-2018 TVS Batch Record Tracker.xlsx")
+Set QASheet = QATracker.Worksheets("2018 WXP; IVHM; Virbantel")
+
+rowCount = backendSheet.Range("C3", "C13").Rows.Count
+Range("statusRange").ClearContents
+
+lotCol = Range("lotCell").Column
+statusCol = Range("statusCell").Column
+lotRow = Range("lotCell").Row
+statusRow = Range("statusCell").Row
+
+Application.Calculate
+
+For I = 1 To rowCount
+    If Not IsError(backendSheet.Cells(lotRow + I, lotCol).Value2) Then
+        searchLot = backendSheet.Cells(lotRow + I, lotCol).Value2
+        
+        If Not QASheet.Range("E3", "E500").Find(searchLot) Is Nothing Then
+            backendSheet.Cells(statusRow + I, statusCol).Value2 = QASheet.Range("E3", "E500").Find(searchLot).Offset(0, -4).Value2
+        Else
+            backendSheet.Cells(statusRow + I, statusCol).Value2 = "No Data Available"
+        End If
+    Else
+        backendSheet.Cells(statusRow + I, statusCol).Value2 = "No Data Available"
+    End If
+Next
+
+End Sub
+Public Sub findOOS()
+
+Set chewTracker = Workbooks("Soft Chew Tracking.xlsm")
+Set backendSheet = chewTracker.Worksheets("Backend Data")
+Set OOSTracker = getWorkbook("V:\QualityAssurance\QA-QC\OOS-LIR\2018 LIR-OOS Log\2018 LIR-OOS Log.xlsx")
+Set OOSSheet = OOSTracker.Worksheets("OOS Log")
+
+rowCount = backendSheet.Range("C3", "C13").Rows.Count
+Range("OOSRange").ClearContents
+
+lotCol = Range("lotCell").Column
+OOSCol = Range("oosCell").Column
+lotRow = Range("lotCell").Row
+OOSRow = Range("oosCell").Row
+
+Application.Calculate
+
+For I = 1 To rowCount
+    If Not IsError(backendSheet.Cells(lotRow + I, lotCol).Value2) Then
+        searchLot = backendSheet.Cells(lotRow + I, lotCol).Value2
+        
+        printString = ""
+        
+        Set OOSCollection = New Collection
+        
+        Set startCell = OOSSheet.Range("H3", "H200").Find(searchLot)
+        If Not startCell Is Nothing Then
+            startAddress = startCell.Address
+            Do
+                If Not IsEmpty(OOSSheet.Cells(startCell.Row, 24)) And Not OOSSheet.Cells(startCell.Row, 24).Value = "" Then
+                    OOSCollection.Add (OOSSheet.Cells(startCell.Row, 2).Value & ": Closed")
+                Else
+                    OOSCollection.Add (OOSSheet.Cells(startCell.Row, 2).Value & ": Open")
+                End If
+                Set startCell = OOSSheet.Range("H3", "H200").FindNext(startCell)
+            Loop While Not startCell Is Nothing And startCell.Address <> startAddress
+        End If
+        
+        Set startCell = OOSSheet.Range("I3", "I200").Find(searchLot)
+        If Not startCell Is Nothing Then
+            startAddress = startCell.Address
+            Do
+                If Not IsEmpty(OOSSheet.Cells(startCell.Row, 24)) And Not OOSSheet.Cells(startCell.Row, 24).Value = "" Then
+                    OOSCollection.Add (OOSSheet.Cells(startCell.Row, 2).Value & ": Closed")
+                Else
+                    OOSCollection.Add (OOSSheet.Cells(startCell.Row, 2).Value & ": Open")
+                End If
+                Set startCell = OOSSheet.Range("I3", "I200").FindNext(startCell)
+            Loop While Not startCell Is Nothing And startCell.Address <> startAddress
+        End If
+        
+        For j = 1 To OOSCollection.Count
+            printString = printString & OOSCollection(j) & Chr(10)
+        Next
+        stringLength = CLng(Len(printString)) - 2
+        If stringLength > -1 Then
+            backendSheet.Cells(OOSRow + I, OOSCol).Value = Left(printString, stringLength + 1)
+        End If
+    End If
+Next
+
+End Sub
+Sub updategenealogy()
+
+Set chewTracker = Workbooks("Soft Chew Tracking.xlsm")
+Set backendSheet = chewTracker.Worksheets("Backend Data")
+
+Dim endPasteCell, compPasteCell, datePasteCell As Range
+
+Set endPasteCell = Range("endPasteCell").End(xlUp).Offset(1, 0)
+Set compPasteCell = Range("compPasteCell").End(xlUp).Offset(1, 0)
+
+Set datePasteCell = compPasteCell.Offset(0, 3)
+
+If Not IsEmpty(Range("endImportStart").Offset(2, 0)) Then
+   Range(Range("endImportStart").Offset(1, 0), Range("endImportStart").Offset(1, 1).End(xlDown)).Copy
+   endPasteCell.PasteSpecial Paste:=xlPasteValues
+   Range(Range("compImportStart").Offset(1, 0), Range("compImportStart").Offset(1, 1).End(xlDown)).Copy
+   compPasteCell.PasteSpecial Paste:=xlPasteValues
+   Range(Range("dateImportStart").Offset(1, 0), Range("dateImportEnd").End(xlUp)).Copy
+   datePasteCell.PasteSpecial Paste:=xlPasteValues
+End If
+
+'remove duplicates on combined table col?
+'delete leftovers?
+
+End Sub
+
+Public Sub getGranulationData()
+
+Dim granLotRange, granCell, startCell, toQADateCell As Range
+Dim granSheet As Worksheet
+Dim genealogyTable As ListObject
+Dim blendColl As Collection
+Dim packColl As Collection
+Dim deviationCollection As Collection
+Dim startAddress, blendPrintString, packPrintString As String
+Dim blendLot, packLot As Variant
+Dim stringLength As Long
+Dim ennovDeviations As ListObject
+Dim OOSCollection As Collection
+Dim OOSTracker As Workbook
+Dim OOSSheet As Worksheet
+
+Set chewTracker = Workbooks("Soft Chew Tracking.xlsm")
+Set backendSheet = chewTracker.Worksheets("Backend Data")
+Set deviationTracker = getWorkbook("V:\QualityAssurance\Quality Assurance\Manufacturing Investigations\Deviation Tracking Log 2015 - 2017.xlsx")
+Set QATracker = getWorkbook("V:\QualityAssurance\Quality Assurance\Auditors\TVS\2017-2018 TVS Batch Record Tracker.xlsx")
+Set QASheet = QATracker.Worksheets("2018 WXP; IVHM; Virbantel")
+Set ennovDeviations = deviationTracker.Worksheets("Ennov Deviations").ListObjects("ennovTable")
+Set OOSTracker = getWorkbook("V:\QualityAssurance\QA-QC\OOS-LIR\2018 LIR-OOS Log\2018 LIR-OOS Log.xlsx")
+Set OOSSheet = OOSTracker.Worksheets("OOS Log")
+Set issueTracker = getWorkbook("S:\Public\1-Production\Schedule Data\BR Issue Tracking.xlsx")
+Set issueSheet = issueTracker.Worksheets("Batch Records Issued")
+Set toQADateCell = Range("granToQADate")
+
+Set granSheet = chewTracker.Worksheets("Granulation Report")
+
+With issueSheet
+    If .AutoFilterMode Then
+        If .FilterMode Then
+            .ShowAllData
+        End If
+    Else
+        If .FilterMode Then
+            .ShowAllData
+        End If
+    End If
+End With
+
+granSheet.Activate
+
+Range("granClearRange").ClearContents
+
+Set genealogyTable = chewTracker.Worksheets("Backend Data").ListObjects("genealogyTable")
+Set granLotRange = Range("granLotStart", Range("granLotStart").End(xlDown))
+
+For Each granCell In granLotRange
+    Set blendColl = New Collection
+    Set packColl = New Collection
+    Set startCell = genealogyTable.ListColumns(8).DataBodyRange.Find(granCell.Value)
+
+    If Not startCell Is Nothing Then
+        startAddress = startCell.Address
+        Do
+            If CStr(genealogyTable.DataBodyRange(startCell.Row - 2, 1).Value) = "Blend" And Not Contains2(blendColl, genealogyTable.DataBodyRange(startCell.Row - 2, 3).Value) Then
+                blendColl.Add (genealogyTable.DataBodyRange(startCell.Row - 2, 3).Value)
+            End If
+            Set startCell = genealogyTable.ListColumns(8).DataBodyRange.FindNext(startCell)
+        Loop While Not startCell Is Nothing And startCell.Address <> startAddress
+    End If
+    blendPrintString = ""
+    packPrintString = ""
+
+        For Each blendLot In blendColl
+            Set startCell = genealogyTable.ListColumns(8).DataBodyRange.Find(blendLot)
+            If Not startCell Is Nothing Then
+                startAddress = startCell.Address
+                Do
+                    If genealogyTable.DataBodyRange(startCell.Row - 2, 1).Value = "Packaging" And Not Contains2(packColl, genealogyTable.DataBodyRange(startCell.Row - 2, 3).Value) Then
+                        packColl.Add (genealogyTable.DataBodyRange(startCell.Row - 2, 3).Value)
+                    End If
+                    Set startCell = genealogyTable.ListColumns(8).DataBodyRange.FindNext(startCell)
+                Loop While Not startCell Is Nothing And startCell.Address <> startAddress
+            End If
+            For Each packLot In packColl
+                packPrintString = packPrintString + CStr(packLot) + Chr(10)
+            Next
+            blendPrintString = blendPrintString + CStr(blendLot) + Chr(10)
+        Next
+
+    stringLength = CLng(Len(blendPrintString)) - 2
+    If stringLength > -1 Then
+        blendPrintString = Left(blendPrintString, stringLength + 1)
+    End If
+    granSheet.Cells(granCell.Row, Range("granBlendCell").Column).Value2 = blendPrintString
+    stringLength = CLng(Len(packPrintString)) - 2
+    If stringLength > -1 Then
+        packPrintString = Left(packPrintString, stringLength + 1)
+    End If
+    granSheet.Cells(granCell.Row, Range("granPackCell").Column).Value2 = packPrintString
+
+
+    'import lot status, etc.
+    searchLot = granCell.Value2
+
+    'import lot status
+    If Not QASheet.Range("E3", "E500").Find(searchLot) Is Nothing Then
+        granSheet.Cells(granCell.Row, Range("granStatusCell").Column).Value2 = QASheet.Range("E3", "E500").Find(searchLot).Offset(0, -4).Value2
+    Else
+        granSheet.Cells(granCell.Row, Range("granStatusCell").Column).Value2 = "No Data Available"
+    End If
+
+    'import DRs
+    printString = ""
+
+    Set deviationCollection = New Collection
+
+    Set startCell = ennovDeviations.ListColumns(12).DataBodyRange.Find(searchLot)
+    If Not startCell Is Nothing Then
+        startAddress = startCell.Address
+        Do
+            If Not IsEmpty(ennovDeviations.DataBodyRange(startCell.Row - 1, 16)) And Not ennovDeviations.DataBodyRange(startCell.Row - 1, 16).Value = "" Then
+                deviationCollection.Add (ennovDeviations.DataBodyRange(startCell.Row - 1, 1).Value & ": Closed")
+            Else
+                deviationCollection.Add (ennovDeviations.DataBodyRange(startCell.Row - 1, 1).Value & " (" & ennovDeviations.DataBodyRange(startCell.Row - 1, 9).Value & ")")
+            End If
+            Set startCell = ennovDeviations.ListColumns(12).DataBodyRange.FindNext(startCell)
+        Loop While Not startCell Is Nothing And startCell.Address <> startAddress
+    End If
+
+    Set startCell = ennovDeviations.ListColumns(15).DataBodyRange.Find(searchLot)
+    If Not startCell Is Nothing Then
+        startAddress = startCell.Address
+        Do
+            If Not IsEmpty(ennovDeviations.DataBodyRange(startCell.Row - 1, 16)) And Not ennovDeviations.DataBodyRange(startCell.Row - 1, 16).Value = "" Then
+                deviationCollection.Add (ennovDeviations.DataBodyRange(startCell.Row - 1, 1).Value & ": Closed")
+            Else
+                deviationCollection.Add (ennovDeviations.DataBodyRange(startCell.Row - 1, 1).Value & " (" & ennovDeviations.DataBodyRange(startCell.Row - 1, 9).Value & ")")
+            End If
+            Set startCell = ennovDeviations.ListColumns(15).DataBodyRange.FindNext(startCell)
+        Loop While Not startCell Is Nothing And startCell.Address <> startAddress
+    End If
+
+    For j = 1 To deviationCollection.Count
+        printString = printString & deviationCollection(j) & Chr(10)
+    Next
+    stringLength = CLng(Len(printString)) - 2
+    If stringLength > -1 Then
+        granSheet.Cells(granCell.Row, Range("granDRCell").Column).Value2 = Left(printString, stringLength + 1)
+    End If
+
+    'import OOS
+    printString = ""
+
+    Set OOSCollection = New Collection
+
+    Set startCell = OOSSheet.Range("H3", "H200").Find(searchLot)
+    If Not startCell Is Nothing Then
+        startAddress = startCell.Address
+        Do
+            If Not IsEmpty(OOSSheet.Cells(startCell.Row, 24)) And Not OOSSheet.Cells(startCell.Row, 24).Value = "" Then
+                OOSCollection.Add (OOSSheet.Cells(startCell.Row, 2).Value & ": Closed")
+            Else
+                OOSCollection.Add (OOSSheet.Cells(startCell.Row, 2).Value & ": Open")
+            End If
+            Set startCell = OOSSheet.Range("H3", "H200").FindNext(startCell)
+        Loop While Not startCell Is Nothing And startCell.Address <> startAddress
+    End If
+
+    Set startCell = OOSSheet.Range("I3", "I200").Find(searchLot)
+    If Not startCell Is Nothing Then
+        startAddress = startCell.Address
+        Do
+            If Not IsEmpty(OOSSheet.Cells(startCell.Row, 24)) And Not OOSSheet.Cells(startCell.Row, 24).Value = "" Then
+                OOSCollection.Add (OOSSheet.Cells(startCell.Row, 2).Value & ": Closed")
+            Else
+                OOSCollection.Add (OOSSheet.Cells(startCell.Row, 2).Value & ": Open")
+            End If
+            Set startCell = OOSSheet.Range("I3", "I200").FindNext(startCell)
+        Loop While Not startCell Is Nothing And startCell.Address <> startAddress
+    End If
+
+    For j = 1 To OOSCollection.Count
+        printString = printString & OOSCollection(j) & Chr(10)
+    Next
+    stringLength = CLng(Len(printString)) - 2
+    If stringLength > -1 Then
+        granSheet.Cells(granCell.Row, Range("granOOSCell").Column).Value2 = Left(printString, stringLength + 1)
+    End If
+
+    'import toQADate
+    If Not issueSheet.Range("F2", "F10000").Find(granCell.Value2) Is Nothing Then
+        If Not issueSheet.Range("F2", "F10000").Find(granCell.Value2).Offset(0, 11).Value2 = "" Then
+            granSheet.Cells(granCell.Row, toQADateCell.Column).Value2 = issueSheet.Range("F2", "F10000").Find(granCell.Value2).Offset(0, 11).Value2
+        End If
+    End If
+Next
+
+Dim packArr() As String
+Dim packLot2 As String
+Dim packLotColl2 As Collection
+Dim packThing2, arrPack As Variant
+Dim packRange2, packCell2, lastPackCell2 As Range
+
+Set lastPackCell2 = granSheet.Cells(1000, Range("packLotStart").Column).End(xlUp)
+Set packRange2 = Range("packLotStart", lastPackCell2)
+
+For Each packCell2 In packRange2
+    Set packLotColl2 = New Collection
+    packArr = Split(packCell2.Value2, Chr(10))
+    
+    For Each arrPack In packArr
+        If Not Contains(packLotColl2, CStr(arrPack)) Then
+            packLotColl2.Add (CStr(arrPack))
+        End If
+    Next
+    
+    printString = ""
+    For j = 1 To packLotColl2.Count
+        printString = printString & packLotColl2(j) & Chr(10)
+    Next
+    stringLength = CLng(Len(printString)) - 2
+    If stringLength > -1 Then
+        packCell2.Value2 = Left(printString, stringLength + 1)
+    End If
+Next
+
+
+End Sub
+Public Function getWorkbook(ByVal workbookName As String) As Workbook
+
+Dim shortName As String
+Dim workbookReturn As Workbook
+shortName = Dir(workbookName)
+
+On Error Resume Next
+    Set workbookReturn = Workbooks(shortName)
+
+    If workbookReturn Is Nothing Then
+        Set workbookReturn = Workbooks.Open(workbookName, 0, True)
+    End If
+On Error GoTo 0
+
+Set getWorkbook = workbookReturn
+
+Workbooks("Soft Chew Tracking.xlsm").Activate
+
+End Function
+
+Public Function Contains(coll As Collection, item As Variant) As Boolean
+
+Dim collItem As Variant
+
+Contains = False
+
+For Each collItem In coll
+    If collItem = item Then
+        Contains = True
+    End If
+Next
+
+End Function
+
+Public Function Contains2(coll As Collection, item As Variant) As Boolean
+
+Dim collItem As Variant
+
+Contains2 = False
+
+For Each collItem In coll
+    'Debug.Print ("In Coll: " & Trim(CStr(collItem)) & " New: " & Trim(CStr(item)))
+    If Trim(CStr(collItem)) = Trim(CStr(item)) Then
+        Contains2 = True
+    End If
+Next
+
+End Function
+
+Sub test()
+
+With Workbooks("BR Issue Tracking.xlsx").Worksheets("Batch Records Issued")
+    If .AutoFilterMode Then
+        If .FilterMode Then
+            .ShowAllData
+        End If
+    Else
+        If .FilterMode Then
+            .ShowAllData
+        End If
+    End If
+End With
+
+End Sub
+
+‘ defined names in soft chew workbook
+blendLotCell	='Backend Data'!$C$4
+blendStatusCell	='Backend Data'!$F$4
+clearRange	='Pack Report'!$M$2:$P$302, 'Pack Report'!$G$2:$G$303
+compImportStart	='Backend Data'!$V$2
+compPasteCell	='Backend Data'!$N$1048286
+dateImportEnd	='Backend Data'!$U$1048576
+dateImportStart	='Backend Data'!$U$2
+devCell	='Backend Data'!$D$2
+deviationRange	='Backend Data'!$D$3:$D$13
+devPasteCell	='Pack Report'!$O$2
+endImportStart	='Backend Data'!$S$2
+endPasteCell	='Backend Data'!$I$1048286
+granBlendCell	='Granulation Report'!$H$1
+granClearRange	='Granulation Report'!$G$2:$L$147
+granDRCell	='Granulation Report'!$K$1
+granLotStart	='Granulation Report'!$D$2
+granOOSCell	='Granulation Report'!$L$1
+granPackCell	='Granulation Report'!$I$1
+granStatusCell	='Granulation Report'!$G$1
+granToQADate	='Granulation Report'!$F$1
+lotCell	='Backend Data'!$C$2
+oosCell	='Backend Data'!$E$2
+oosRange	='Backend Data'!$E$3:$E$13
+packLotCell	='Backend Data'!$A$2
+packLotStart	='Granulation Report'!$I$2
+packStatusCell	='Backend Data'!$F$3
+reportBlendLot	='Pack Report'!$H$1
+reportBlendStatus	='Pack Report'!$M$1
+reportBlendtoQA	='Pack Report'!$L$1
+reportDeviations	='Pack Report'!$O$1
+reportGranulations	='Pack Report'!$N$1
+reportOOS	='Pack Report'!$P$1
+reportPackStatus	='Pack Report'!$G$1
+statusCell	='Backend Data'!$F$2
+statusRange	='Backend Data'!$F$3:$F$13
+toQADate	='Pack Report'!$F$1
+updateStart	='Pack Report'!$C$2

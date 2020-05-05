@@ -1,0 +1,114 @@
+Option Explicit
+
+‘cleans up lists of initials (formatted/separated in a variety of ways, with occasional non-relevant information in the same cell) and converts them to first and last names based on a reference table
+‘used for automating error tracking analyses by removing manual effort of identifying operators listed by initials only
+
+Sub findNames()
+
+Application.Calculation = xlCalculationManual
+
+Dim i As Long
+Dim symbol As Variant
+Dim rawString As String
+Dim targetCell As Range
+Dim breakSymbols(6) As String
+
+breakSymbols(0) = ","
+breakSymbols(1) = ";"
+breakSymbols(2) = "/"
+breakSymbols(3) = ")"
+breakSymbols(4) = "&"
+breakSymbols(5) = "-"
+breakSymbols(6) = " "
+
+For Each targetCell In Selection
+    targetCell.Offset(0, 3).Value = breakString(targetCell.Value, breakSymbols)
+Next
+
+Application.Calculation = xlCalculationAutomatic
+
+End Sub
+
+Function breakString(rawString As String, breakSymbols() As String) As String
+
+Dim i As Long
+Dim j As Long
+Dim indexColl As New Collection
+Dim outputArr() As String
+
+j = 0
+
+indexColl.Add (0)
+
+For i = 1 To Len(rawString)
+    If UBound(Filter(breakSymbols, Mid(rawString, i, 1), True, vbTextCompare)) > -1 Then
+        indexColl.Add (i)
+    End If
+Next
+
+indexColl.Add (Len(rawString) + 1)
+
+ReDim outputArr(indexColl.Count - 1)
+
+For i = 2 To indexColl.Count
+    outputArr(j) = Mid(rawString, indexColl(i - 1) + 1, indexColl(i) - indexColl(i - 1) - 1)
+    j = j + 1
+Next
+
+breakString = cleanString(outputArr)
+
+End Function
+
+Function cleanString(dirtyArray() As String) As String
+
+Dim i As Long
+Dim j As Long
+Dim truncIndex As Long
+
+For i = 0 To UBound(dirtyArray)
+    truncIndex = 0
+    For j = 1 To Len(dirtyArray(i))
+        If Mid(dirtyArray(i), j, 1) = "(" Then
+            truncIndex = j
+            Exit For
+        End If
+    Next
+    If truncIndex > 0 Then
+        dirtyArray(i) = Left(dirtyArray(i), truncIndex - 1)
+    End If
+    truncIndex = 0
+    For j = 1 To Len(dirtyArray(i))
+        If Mid(dirtyArray(i), j, 1) = "?" Then
+            truncIndex = j
+            Exit For
+        End If
+    Next
+    If truncIndex > 0 Then
+        dirtyArray(i) = Left(dirtyArray(i), truncIndex - 1)
+    End If
+    dirtyArray(i) = Trim(dirtyArray(i))
+Next
+
+cleanString = convertString(dirtyArray)
+
+End Function
+
+Function convertString(cleanArray() As String) As String
+
+Dim initialsList As ListObject
+Dim printString As String
+Dim i As Long
+
+Set initialsList = Workbooks("Batch Record Corrections.xlsm").Worksheets("Names & Initials").ListObjects("initialsTable")
+
+For i = 0 To UBound(cleanArray)
+    If Not cleanArray(i) = "" Then
+        If Not initialsList.ListColumns(2).Range.Find(cleanArray(i), , , xlWhole) Is Nothing Then
+            printString = printString & " " & initialsList.ListColumns(2).Range.Find(cleanArray(i), , , xlWhole).Offset(0, -1).Value & ","
+        End If
+    End If
+Next
+
+convertString = printString
+
+End Function

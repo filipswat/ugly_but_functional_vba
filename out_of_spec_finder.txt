@@ -1,0 +1,144 @@
+Public Sub findOOS()
+
+'looks through OOS logs (2013-2016) and checks to see which ones apply to specified lot numbers
+'lot numbers are copied into the top row of the OOS Finder workbook
+
+'declares initial variable (workbooks and worksheets)
+Dim oosFinder As Workbook
+Set oosFinder = Workbooks("OOS Finder.xlsm")
+Dim finderSheet As Worksheet
+Set finderSheet = oosFinder.Worksheets("OOS Finder")
+
+'these will be used to store whichever OOS log is currently being stored
+Dim oosBook As Workbook
+Dim logSheet As Worksheet
+
+'probably a cleaner way of getting all the workbooks to search together, but this is easy enough to edit
+Dim workbookList As New Collection
+workbookList.Add ("S:\QA - QC\OOS-LIR\2009 - 2013 OOS\\2013 OOS Log\2013 OOS Log.xls")
+workbookList.Add ("S:\QA - QC\OOS-LIR\2014 OOS Log\2014 OOS Log\2014 OOS Log.xls")
+workbookList.Add ("S:\QA - QC\OOS-LIR\2015 OOS Log\2015 OOS Log.xlsx")
+workbookList.Add ("S:\QA - QC\OOS-LIR\2016 OOS Log\2016 LIR-OOS Log_without metrics.xlsx")
+workbookList.Add ("S:\QA - QC\OOS-LIR\2017 LIR-OOS Log\2017 LIR-OOS Log.xlsx")
+
+'establishes range in which to look for raw material lot numbers
+Dim lotNumbers As Range
+Set lotNumbers = finderSheet.Range(finderSheet.Cells(1, 2), finderSheet.Cells(1, 50))
+
+'declares a few other variables to be used below
+Dim lotCell As Range
+Dim oosSheet As Worksheet
+Dim maxRow As Long
+Dim location As Range
+Dim startAddress As String
+Dim oosColumn As Long
+Dim lirColumn As Long
+Dim rowCounter As Long
+Dim rowToTypeIn As Long
+
+maxRow = 1000
+
+'cycles through each OOS log
+For Each book In workbookList
+    Workbooks.Open book
+    Set oosBook = ActiveWorkbook
+    For Each oosSheet In oosBook.Worksheets
+        If InStr(1, oosSheet.Range("A1"), "lir", vbTextCompare) Then
+            lirColumn = 1
+        ElseIf Not oosSheet.Rows(1).Find("lir") Is Nothing Then
+            lirColumn = oosSheet.Rows(1).Find("lir").Column
+        Else
+            lirColumn = 0
+        End If
+        If InStr(1, oosSheet.Range("A1"), "oos", vbTextCompare) Then
+            oosColumn = 1
+        ElseIf Not oosSheet.Rows(1).Find("oos") Is Nothing Then
+            oosColumn = oosSheet.Rows(1).Find("oos").Column
+        Else
+            oosColumn = 0
+        End If
+        For Each lotCell In lotNumbers
+            If Not IsEmpty(lotCell) And lotCell.Value <> "N/A" And lotCell.Value <> "NA" Then
+                If checkForLot(oosSheet, CStr(lotCell.Value)) Then
+                    Set location = oosSheet.Range("A1", "EE" & maxRow).Find(lotCell.Value) '(oosSheet.Cells(1, i), oosSheet.Cells(maxRow, i)).Find(lotCell.Value)
+                    If Not location Is Nothing Then
+                        startAddress = location.Address
+                        Do
+                            rowToTypeIn = finderSheet.Cells(1000, lotCell.Column).End(xlUp).Row + 1
+                            If oosColumn > 0 Then
+                                finderSheet.Cells(rowToTypeIn, lotCell.Column).Value = oosSheet.Cells(location.Row, oosColumn).Value
+                                'Debug.Print (oosSheet.Cells(location.Row, oosColumn).Value)
+                                rowToTypeIn = rowToTypeIn + 1
+                            End If
+                            If lirColumn > 0 Then
+                                finderSheet.Cells(rowToTypeIn, lotCell.Column).Value = oosSheet.Cells(location.Row, lirColumn).Value
+                                'Debug.Print (oosSheet.Cells(location.Row, lirColumn).Value)
+                                rowToTypeIn = rowToTypeIn + 1
+                            End If
+                            Set location = oosSheet.Range("A1", "EE" & maxRow).FindNext(location) 'oosSheet.Range(oosSheet.Cells(1, i), oosSheet.Cells(maxRow, i)).FindNext(location)
+                        Loop While location.Address <> startAddress And Not location Is Nothing
+                    End If
+                End If
+            End If
+        Next
+    Next
+    oosBook.Activate
+    oosBook.Close SaveChanges:=False
+Next
+
+
+'OLD CODE
+
+'    Set logSheet = ActiveSheet
+'    logSheet.Range("B1000").Select
+'    Selection.End(xlUp).Select
+'    maxRow = Selection.Row 'sets range of rows to look through
+'    If Not logSheet.Range("A1", "Z1").Find("oos") Is Nothing Then 'test to avoid crashing when Match throws an error
+'        oosColumn = WorksheetFunction.Match("*oos*", logSheet.Range("A1", "Z1"), 0)
+'    Else
+'        oosColumn = WorksheetFunction.Match("*lir*", logSheet.Range("A1", "Z1"), 0) '2015 OOS log says "LIR #" where it should say "OOS #"
+'    End If
+'    For i = 1 To logSheet.Range("A1", logSheet.Range("A1").End(xlToRight)).Columns.Count
+'        If InStr(1, logSheet.Cells(1, i).Text, "lot", vbTextCompare) Then 'for each book, runs search for each column containing "lot" (2016 log has a "other lots affected" column)
+'            For Each lotCell In lotNumbers
+'                If Not IsEmpty(lotCell) And lotCell.Value <> "N/A" And lotCell.Value <> "NA" Then 'goes through lot numbers range and performs search for all lots found (ignores blanks and N/As)
+
+'                    Set location = logSheet.Range(logSheet.Cells(1, i), logSheet.Cells(maxRow, i)).Find(lotCell.Value) 'uses find function to locate lots in OOS log and return OOS number
+'                    If Not location Is Nothing Then
+'                        startAddress = location.Address
+'                        Do
+'                            If IsEmpty(lotCell.Offset(1, 0)) Then
+'                                rowToTypeIn = 2
+'                            Else
+'                                rowToTypeIn = lotCell.End(xlDown).Row + 1
+'                            End If
+'                            finderSheet.Cells(rowToTypeIn, lotCell.Column).Value = logSheet.Cells(location.Row, oosColumn).Value 'adjusts so that OOS #s from later books don't overwrite earlier ones
+'                            Set location = logSheet.Range(logSheet.Cells(1, i), logSheet.Cells(maxRow, i)).FindNext(location)
+'                        Loop While location.Address <> startAddress And Not location Is Nothing 'check to see if it should keep looking for OOSs
+
+'                    End If
+'                End If
+'            Next
+'        End If
+'    Next
+'    oosBook.Activate
+'    oosBook.Close SaveChanges:=False 'closes currently opened book
+'Next
+
+End Sub
+
+Private Sub CommandButton1_Click()
+
+Call findOOS
+
+End Sub
+
+Function checkForLot(sheetToCheck As Worksheet, lotNumber As String)
+
+checkForLot = True
+
+If sheetToCheck.Range("A1:EE15000").Find(lotNumber) Is Nothing Then
+    checkForLot = False
+End If
+
+End Function

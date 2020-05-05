@@ -1,0 +1,111 @@
+Option Explicit
+
+Dim newBook As Workbook
+Dim newSheet As Worksheet
+Dim pathArray(1) As Variant
+Dim pathName As Variant
+Dim fileName As String
+Dim i As Long
+Dim thisBook As Workbook
+Dim thisSheet As Worksheet
+Dim startDate As Long
+Dim colCount As Long
+Dim dateCol As Long
+Dim rowCount As Long
+Dim pasteCell As Range
+Dim sourceFolderCol As Long
+Dim sourceFileCol As Long
+Dim startDateCol As Long
+Dim pathStr As String
+
+Sub findNewCorrections()
+
+'setting calculation to manual speeds up calculations dramatically
+Application.Calculation = xlCalculationManual
+
+'define folders to be searched
+'really need to make this recursive with exceptions -- this is really stupid
+
+pathArray(0) = "V:\QualityAssurance\Quality Assurance\Auditors\TVS\Batch record review QA issue log\"
+pathArray(1) = "V:\QualityAssurance\Quality Assurance\Auditors\LPVS\Observations\"
+
+i = 1
+
+Set thisBook = Workbooks("Batch Record Corrections (Refactor 22Feb18).xlsm")
+Set thisSheet = thisBook.Worksheets("Current")
+
+'pasteCell determines the starting point where new data will be added
+'needed a big, arbitrary number for starting point, 524287 (2^19 - 1) is the 7th Mersenne prime, which is kind of interesting
+Set pasteCell = thisSheet.Range("A524287").End(xlUp).Offset(1, 0)
+sourceFileCol = thisSheet.Rows(1).Find("source file").Column
+sourceFolderCol = thisSheet.Rows(1).Find("source folder").Column
+startDateCol = thisSheet.Rows(1).Find("review date").Column
+
+'to avoid copying entries that were copied in the past, this sets a starting point for the review date (can be set to oldest entry in list)
+startDate = Application.WorksheetFunction.Max(thisSheet.Columns(startDateCol))
+
+'looks at all .xlsx files in pathways (folders) provided in array above
+For Each pathName In pathArray
+    pathStr = CStr(pathName)
+    Call traverseCorrPath(pathStr, thisSheet, pasteCell, startDate)
+Next
+
+Application.Calculation = xlCalculationAutomatic
+
+End Sub
+
+Function traverseCorrPath(path As String, thisSheet As Worksheet, pasteCell As Range, startDate As Long)
+'code stolen (and slightly modified) from http://analystcave.com/vba-dir-function-how-to-traverse-directories/
+Dim currentPath As String, directory As Variant
+Dim dirCollection As Collection
+Set dirCollection = New Collection
+
+currentPath = Dir(path, vbDirectory)
+
+'Explore current directory
+Do Until currentPath = vbNullString
+    If Left(currentPath, 1) <> "." And (GetAttr(path & currentPath) And vbDirectory) <> vbDirectory Then
+        Call copyCorrections(path, currentPath, thisSheet, pasteCell, startDate)
+    ElseIf Left(currentPath, 1) <> "." And (GetAttr(path & currentPath) And vbDirectory) = vbDirectory Then
+'        Selection.Value = path & currentPath
+'        Selection.Offset(1, 0).Select
+        dirCollection.Add currentPath
+    End If
+    currentPath = Dir()
+Loop
+
+'Explore subsequent directories
+For Each directory In dirCollection
+    Debug.Print (path & directory)
+    Call traverseCorrPath(path & directory & "\", thisSheet, pasteCell, startDate)
+Next directory
+
+End Function
+
+Sub copyCorrections(path As String, currentPath As String, thisSheet As Worksheet, pasteCell As Range, startDate As Long)
+If (Int(FileDateTime(path & currentPath)) > startDate) And Right(currentPath, 4) = "xlsx" Then
+    'opens file if opened after start date, copies over columns reviewed after start date
+    Set newBook = Workbooks.Open(path & currentPath, 0)
+    Set newSheet = newBook.Worksheets(1)
+    ''ensures only materials from new template are copied over
+    'If newSheet.Name = "Template42" Then
+        newSheet.Cells.EntireRow.Hidden = False
+        newSheet.Cells.EntireColumn.Hidden = False
+        dateCol = newSheet.Rows(2).Find("date").Column
+        colCount = newSheet.Range("A2").End(xlToRight).Column
+        rowCount = newSheet.Range("D1000").End(xlUp).Row
+        For i = 3 To rowCount
+            If newSheet.Cells(i, dateCol).Value >= startDate Then
+                newSheet.Range(newSheet.Cells(i, 2), newSheet.Cells(i, colCount)).Copy
+                pasteCell.PasteSpecial xlPasteValues
+                'includes name of source worksheet by each entry
+                thisSheet.Cells(pasteCell.Row, sourceFileCol).Value = currentPath
+                thisSheet.Cells(pasteCell.Row, sourceFolderCol).Value = path
+                Set pasteCell = pasteCell.Offset(1, 0)
+            End If
+        Next
+    'End If
+    newBook.Close SaveChanges:=False
+End If
+
+End Sub

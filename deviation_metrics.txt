@@ -1,0 +1,305 @@
+Option Explicit
+
+Sub compileMetrics()
+
+Application.Calculation = xlCalculationManual
+
+'define variables for worksheets and tables in deviation tracker
+Dim i As Long
+Dim deviationTracker As Workbook
+Dim DRs2016 As Worksheet
+Dim DRs2017 As Worksheet
+Dim ennovDRs As Worksheet
+Dim table2016 As ListObject
+Dim table2017 As ListObject
+Dim ennovTable As ListObject
+Dim DRMetrics As Worksheet
+
+Set deviationTracker = ActiveWorkbook
+Set DRs2016 = deviationTracker.Worksheets("Deviations_2016")
+Set DRs2017 = deviationTracker.Worksheets("Deviations_2017")
+Set ennovDRs = deviationTracker.Worksheets("Ennov Deviations")
+Set table2016 = DRs2016.ListObjects("deviations2016")
+Set table2017 = DRs2017.ListObjects("deviations2017")
+Set ennovTable = ennovDRs.ListObjects("ennovTable")
+Set DRMetrics = deviationTracker.Worksheets("Metrics")
+
+Application.Calculate
+
+'Set cell into which open > 30 days information will be copied (in metrics sheet)
+Dim startMetrics As String
+startMetrics = "F5"
+
+'clear out previous metrics
+If Not IsEmpty(DRMetrics.Range(startMetrics)) Then
+    DRMetrics.Activate
+    DRMetrics.Range(startMetrics, DRMetrics.Cells(DRMetrics.Range(startMetrics).Offset(-1, 0).End(xlDown).Row, 8)).Select
+    Selection.Delete (xlShiftToLeft)
+End If
+
+'compile basic info on DRs open > 30 days. separate calls for each DR table
+'Call over30Days(table2016, startMetrics)
+Call over30Days(table2017, startMetrics)
+Call over30Days(ennovTable, startMetrics)
+
+'format open > 30 days
+If Not IsEmpty(DRMetrics.Range(startMetrics)) Then
+    DRMetrics.Activate
+    DRMetrics.Range(DRMetrics.Range(startMetrics).Offset(-1, 0), DRMetrics.Cells(DRMetrics.Range(startMetrics).Offset(-1, 0).End(xlDown).Row, 8)).Select
+    With Selection
+        .Borders.LineStyle = xlContinuous
+        .VerticalAlignment = xlCenter
+        .HorizontalAlignment = xlCenter
+        .Columns.AutoFit
+    End With
+End If
+
+'create new workbook for metrics and names sheets appropriately.  new workbook will be named / saved manually
+Workbooks.Add
+
+Dim newBook As Workbook
+Dim newEnnov As Worksheet
+Dim new2017 As Worksheet
+Dim newMetrics As Worksheet
+
+Set newBook = ActiveWorkbook
+Set new2017 = newBook.Sheets("Sheet1")
+Set newEnnov = newBook.Sheets("Sheet2")
+Set newMetrics = newBook.Sheets("Sheet3")
+
+newEnnov.Name = "Ennov Deviations"
+new2017.Name = "2017"
+newMetrics.Name = "Metrics"
+
+'set where on the sheet to put copied 2016 and 2017 DRs
+Dim start2017 As String
+Dim startEnnov As String
+
+start2017 = "A1"
+startEnnov = "A1"
+
+'copy over all open deviations
+'Call copyOpenDRs(table2016, new2016, start2016)
+Call copyOpenDRs(table2017, new2017, start2017)
+Call copyOpenDRs(ennovTable, newEnnov, startEnnov)
+
+'create array containing names of column headers that will be included in metrics for each table
+Dim keep2016(10) As String
+keep2016(0) = "Deviation Number"
+keep2016(1) = "Owner"
+keep2016(2) = "Product"
+keep2016(3) = "Suspected Root Cause"
+keep2016(4) = "Date Deviation Opened"
+keep2016(5) = "Description of Deviation"
+keep2016(6) = "Due Date"
+keep2016(7) = "Date Initiation Form Approved"
+keep2016(8) = "Ext. Date"
+keep2016(9) = "Days Until Due"
+keep2016(10) = "Business Days Until Due"
+
+Dim keep2017(11) As String
+keep2017(0) = "Deviation Number"
+keep2017(1) = "Owner"
+keep2017(2) = "Owning Department"
+keep2017(3) = "Affected Product / System"
+keep2017(4) = "Date Opened"
+keep2017(5) = "Date Initiation Form Approved"
+keep2017(6) = "Due Date"
+keep2017(7) = "Business Days Until Due"
+keep2017(8) = "Deviation Type"
+keep2017(9) = "Deviation Summary"
+keep2017(10) = "Extension Date"
+keep2017(11) = "2nd Extension Date"
+
+Dim keepEnnov(8) As String
+keepEnnov(0) = "P_REF"
+keepEnnov(1) = "CREATION_DATE"
+keepEnnov(2) = "DEV_TYPE"
+keepEnnov(3) = "PRODUCT_AFFECTED"
+keepEnnov(4) = "DEV_DUE_DATE"
+keepEnnov(5) = "CURRENT_ACT_NAME"
+keepEnnov(6) = "CURRENT_ACT_MANAGER"
+keepEnnov(7) = "DEV_SHORT_DESCR"
+keepEnnov(8) = "Business Days Until Due"
+
+'remove unnecessary columns from copied deviations
+'Call deleteCols(new2016, start2016, keep2016)
+Call deleteCols(new2017, start2017, keep2017)
+Call deleteCols(newEnnov, startEnnov, keepEnnov)
+
+'format deviations based on days open and days until due
+'Call formatDRs(new2016, start2016)
+Call formatDRs(new2017, start2017)
+Call formatDRs(newEnnov, startEnnov)
+
+'copy metrics values into new worksheet
+DRMetrics.UsedRange.Copy
+newMetrics.Range("A1").PasteSpecial xlPasteValues
+newMetrics.Range("A1").PasteSpecial xlPasteFormats
+newMetrics.UsedRange.Columns.AutoFit
+
+Application.Calculation = xlCalculationAutomatic
+
+End Sub
+
+Public Sub over30Days(sourceTable As ListObject, startCell As String)
+
+'update DRs open > 30 days
+Dim i As Long
+Dim DRMetrics As Worksheet
+Dim IDCol As Long
+Dim ownerCol As Long
+Dim busDaysCol As Long
+Dim closedCol As Long
+Dim dateOpenedCol As Long
+Dim startCol As Long
+Dim newStart As Range
+
+'set column numbers
+Set DRMetrics = Workbooks("Deviation Tracking Log 2015 - 2017.xlsx").Worksheets("Metrics")
+If sourceTable.HeaderRowRange(1, 1).Value = "Deviation Number" Then
+    IDCol = sourceTable.HeaderRowRange.Find("deviation number").Column
+    ownerCol = sourceTable.HeaderRowRange.Find("owner").Column
+    busDaysCol = sourceTable.HeaderRowRange.Find("business days").Column
+    closedCol = sourceTable.HeaderRowRange.Find("closed").Column
+    dateOpenedCol = sourceTable.HeaderRowRange.Find("opened").Column
+    startCol = DRMetrics.Range(startCell).Column
+Else
+    IDCol = sourceTable.HeaderRowRange.Find("P_REF").Column
+    ownerCol = sourceTable.HeaderRowRange.Find("CURRENT_ACT_MANAGER").Column
+    busDaysCol = sourceTable.HeaderRowRange.Find("business days").Column
+    closedCol = sourceTable.HeaderRowRange.Find("closed").Column
+    dateOpenedCol = sourceTable.HeaderRowRange.Find("CREATION_DATE").Column
+    startCol = DRMetrics.Range(startCell).Column
+End If
+
+'loop through table and appropriately copy over those open > 30 days
+For i = 1 To sourceTable.ListRows.Count
+    If IsEmpty(sourceTable.DataBodyRange(i, closedCol)) Or sourceTable.DataBodyRange(i, closedCol).Value = "" Then
+        If (CLng(Date) - sourceTable.DataBodyRange(i, dateOpenedCol).Value) > 30 Then
+            If IsEmpty(DRMetrics.Range(startCell)) Then 'if there's no current >30 days data
+                DRMetrics.Range(startCell).Value = sourceTable.DataBodyRange(i, IDCol).Value
+                DRMetrics.Range(startCell).Offset(0, 1).Value = sourceTable.DataBodyRange(i, ownerCol).Value
+                DRMetrics.Range(startCell).Offset(0, 2).Value = sourceTable.DataBodyRange(i, busDaysCol).Value
+            Else 'all further deviations copied in
+                Set newStart = DRMetrics.Range(startCell).Offset(-1, 0).End(xlDown).Offset(1, 0)
+                newStart.Value = sourceTable.DataBodyRange(i, IDCol).Value
+                newStart.Offset(0, 1).Value = sourceTable.DataBodyRange(i, ownerCol).Value
+                newStart.Offset(0, 2).Value = sourceTable.DataBodyRange(i, busDaysCol).Value
+            End If
+        End If
+    End If
+Next
+
+
+End Sub
+
+Public Sub copyOpenDRs(sourceTable As ListObject, destSheet As Worksheet, firstCell As String)
+
+sourceTable.HeaderRowRange.Copy
+destSheet.Range(firstCell).PasteSpecial xlPasteValues
+
+Dim i As Long
+Dim closeCol As Long
+Dim rowOffset As Long
+Dim colCount As Long
+
+rowOffset = 1
+closeCol = sourceTable.HeaderRowRange.Find("close").Column
+colCount = sourceTable.ListColumns.Count
+
+'copy all open DRs into determined sheet
+For i = 1 To sourceTable.ListRows.Count
+    If IsEmpty(sourceTable.DataBodyRange(i, closeCol)) Or sourceTable.DataBodyRange(i, closeCol).Value = "" Then
+        sourceTable.ListRows(i).Range.Copy
+        destSheet.Range(firstCell).Offset(rowOffset, 0).PasteSpecial xlPasteValues
+        rowOffset = rowOffset + 1
+    End If
+Next
+
+End Sub
+
+Public Sub deleteCols(DRSheet As Worksheet, firstCell As String, keepArray() As String)
+
+Dim i As Long
+Dim firstRow As Long
+Dim rowCount As Long
+Dim colCount As Long
+
+firstRow = DRSheet.Range(firstCell).Row
+colCount = DRSheet.Range(firstCell, DRSheet.Range(firstCell).End(xlToRight)).Columns.Count
+rowCount = DRSheet.Range(firstCell).End(xlDown).Row
+
+'delete columns whose headers are not in keepArray()
+For i = (1 + colCount) To firstRow Step -1
+    If UBound(Filter(keepArray, DRSheet.Cells(firstRow, i).Value, True, vbTextCompare)) = -1 Then
+        DRSheet.Range(DRSheet.Cells(firstRow, i), DRSheet.Cells(firstRow + rowCount, i)).Delete (xlShiftToLeft)
+    End If
+Next
+
+End Sub
+
+Public Sub formatDRs(DRSheet As Worksheet, firstCell As String)
+
+Dim i As Long
+Dim colCount As Long
+Dim rowCount As Long
+Dim dateOpenCol As Long
+Dim busDaysCol As Long
+Dim firstRow As Long
+Dim firstCol As Long
+
+'define column #s, row #s, counts
+colCount = DRSheet.Range(firstCell, DRSheet.Range(firstCell).End(xlToRight)).Columns.Count
+rowCount = DRSheet.Range(firstCell, DRSheet.Range(firstCell).End(xlDown)).Rows.Count
+If DRSheet.Range(firstCell).Value = "P_REF" Then
+    dateOpenCol = DRSheet.Range(firstCell, DRSheet.Range(firstCell).End(xlToRight)).Find("CREATION_DATE").Column
+Else
+    dateOpenCol = DRSheet.Range(firstCell, DRSheet.Range(firstCell).End(xlToRight)).Find("open").Column
+End If
+busDaysCol = DRSheet.Range(firstCell, DRSheet.Range(firstCell).End(xlToRight)).Find("business days").Column
+firstRow = DRSheet.Range(firstCell).Row
+firstCol = DRSheet.Range(firstCell).Column
+
+'color open > 30 days red, due w/in 10 business days yellow
+For i = (firstRow + 1) To (firstRow + rowCount - 1)
+    If (CLng(Date) - DRSheet.Cells(i, dateOpenCol).Value) >= 30 Then
+        DRSheet.Range(DRSheet.Cells(i, firstCol), DRSheet.Cells(i, firstCol + colCount - 1)).Interior.ColorIndex = 3
+    ElseIf DRSheet.Cells(i, busDaysCol).Value <= 10 Then
+        DRSheet.Range(DRSheet.Cells(i, firstCol), DRSheet.Cells(i, firstCol + colCount - 1)).Interior.ColorIndex = 6
+    End If
+Next
+
+'format date columns as dates
+For i = firstCol To colCount
+    If InStr(1, DRSheet.Cells(firstRow, i).Value, "date", vbTextCompare) <> 0 Then
+        DRSheet.Range(DRSheet.Cells(firstRow, i), DRSheet.Cells(firstRow + rowCount - 1, i)).NumberFormat = "ddmmmyyyy"
+    End If
+Next
+
+'set column widths, bolding, borders, etc.
+With DRSheet.Range(DRSheet.Cells(firstRow, firstCol), DRSheet.Cells(firstRow, firstCol + colCount - 1))
+    .Borders.LineStyle = xlContinuous
+    .VerticalAlignment = xlCenter
+    .HorizontalAlignment = xlCenter
+    .WrapText = True
+    .ColumnWidth = 30
+    .Columns.AutoFit
+    .Interior.ColorIndex = 15
+    .Font.Bold = True
+End With
+
+With DRSheet.Range(DRSheet.Cells(firstRow + 1, firstCol), DRSheet.Cells(firstRow + rowCount - 1, firstCol + colCount - 1))
+    .Borders.LineStyle = xlContinuous
+    .VerticalAlignment = xlCenter
+    .HorizontalAlignment = xlCenter
+    .WrapText = True
+End With
+
+With DRSheet.Range(DRSheet.Cells(firstRow, firstCol), DRSheet.Cells(firstRow + rowCount - 1, firstCol + colCount - 1))
+    .ColumnWidth = 60
+    .Columns.AutoFit
+    .Rows.AutoFit
+End With
+
+End Sub
